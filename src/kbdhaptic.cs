@@ -31,9 +31,9 @@ internal static class KbdHaptic
 {
     // ---- config (live) ----
     private static int _controllerIndex = 0;
-    private static int _clickIntensity = 100;
-    private static int _bassIntensity = 0;
-    private static int _pulseMs = 20;
+    private static int _clickIntensity = 35;
+    private static int _bassIntensity = 35;
+    private static int _pulseMs = 5;
     private static bool _injectedOnly = true;
     private static bool _requireKeyboardVisible = true;
     private static bool _enabled = true;
@@ -70,6 +70,10 @@ internal static class KbdHaptic
     private const int EM_SETCUEBANNER = 0x1501;
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll")]
@@ -131,15 +135,26 @@ internal static class KbdHaptic
                 Application.SetCompatibleTextRenderingDefault(false);
                 using (var f = new SettingsForm())
                 {
-                    f.CreateControl();
-                    Realize(f);          // force handles so children render
-                    f.PerformLayout();
-                    var sz = f.ClientSize;
-                    using (var bmp = new Bitmap(sz.Width, sz.Height))
+                    // Show off-screen without stealing focus, then capture the whole
+                    // window (frame + client) via PrintWindow(PW_RENDERFULLCONTENT).
+                    f.StartPosition = FormStartPosition.Manual;
+                    f.Location = new Point(-32000, -32000);
+                    f.ShowInTaskbar = false;
+                    IntPtr prevFg = GetForegroundWindow();
+                    f.Show();
+                    Application.DoEvents();
+                    using (var bmp = new Bitmap(f.Width, f.Height))
                     {
-                        f.DrawToBitmap(bmp, new Rectangle(0, 0, sz.Width, sz.Height));
+                        using (var g = Graphics.FromImage(bmp))
+                        {
+                            IntPtr hdc = g.GetHdc();
+                            PrintWindow(f.Handle, hdc, 2); // PW_RENDERFULLCONTENT
+                            g.ReleaseHdc(hdc);
+                        }
                         bmp.Save(cmd[2], System.Drawing.Imaging.ImageFormat.Png);
                     }
+                    f.Close();
+                    if (prevFg != IntPtr.Zero) SetForegroundWindow(prevFg);
                 }
             }
             catch { }
