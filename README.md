@@ -1,43 +1,43 @@
 # kbdhaptic
 
-Touch-keyboard haptic feedback and gamepad File Explorer controls for Windows 11
-handheld PCs (built and tested on the MSI Claw 8 AI+).
+Виброотклик экранной клавиатуры и управление проводником с геймпада для портативных
+ПК на Windows 11 (собрано и проверено на MSI Claw 8 AI+).
 
-- **Haptic typing:** a short controller vibration on every on-screen-keyboard key
-  tap. Nothing fires outside the keyboard (desktop, games, scrolling stay silent).
-- **Gamepad in Explorer:** while a File Explorer window is active, the gamepad drives
-  it (each action with the same vibration): **A** open, **Y** up a level,
-  **B** back, **X** context menu.
-- Runs headless in the tray, no admin required, ~0% idle CPU.
+- **Вибро на набор:** короткий виброимпульс контроллера на каждый тап по клавише
+  экранной клавиатуры. Вне клавиатуры (рабочий стол, игры, прокрутка) тишина.
+- **Геймпад в проводнике:** пока активно окно проводника, геймпад управляет им
+  (каждое действие с вибрацией): **A** открыть, **Y** уровень вверх, **B** назад,
+  **X** контекстное меню.
+- Работает в фоне из трея, без прав администратора, в простое около 0% CPU.
 
-## How it works
+## Как работает
 
-A low-level keyboard hook sees the on-screen keyboard's injected key events; while the
-touch keyboard is visible (`IFrameworkInputPane`), each key tap fires an XInput
-vibration pulse (motor stopped by a timer). The Explorer mappings poll XInput only
-while an Explorer window is foreground. Area/visibility based, not per-key.
+Низкоуровневый хук клавиатуры ловит инжектированные нажатия экранной клавиатуры. Пока
+клавиатура видима (`IFrameworkInputPane`), каждый тап даёт виброимпульс XInput (мотор
+выключается по таймеру). Действия в проводнике опрашивают XInput только когда окно
+проводника активно. Детект по области и видимости клавиатуры, а не по отдельным клавишам.
 
-Tested on an Intel Arc / Lunar Lake handheld; needs an XInput controller (slot 0) and
-.NET Framework 4.x (present on Windows by default).
+Проверено на хендхелде с Intel Arc (Lunar Lake). Нужен XInput контроллер (слот 0) и
+.NET Framework 4.x (есть в Windows по умолчанию).
 
-## Install
+## Установка
 
-Download the `release` folder (or the release archive) and run **Install.cmd**. It
-removes any previous version, installs to `%LOCALAPPDATA%\kbdhaptic`, registers a
-logon autostart task (no admin), and starts it. **Uninstall.cmd** removes everything.
-Your `kbdhaptic.ini` settings are kept across updates.
+Скачай папку `release` (или архив релиза) и запусти **Install.cmd**. Он удалит прошлую
+версию, установит в `%LOCALAPPDATA%\kbdhaptic`, повесит автозапуск по входу в систему
+(без прав администратора) и запустит. **Uninstall.cmd** всё удаляет. Настройки в
+`kbdhaptic.ini` сохраняются при обновлении.
 
-## Settings
+## Настройки
 
-Double-click the tray icon:
+Двойной клик по иконке в трее:
 
-- **Вибрация** — Малый мотор (R, high-freq, sharp click), Большой мотор (L, low-freq),
-  Длина импульса (1–40 ms); a Test button and a test input field.
-- **Проводник** — toggle "Кнопки геймпада в проводнике".
+- **Вибрация:** Малый мотор (R, высокочастотный, резкий щелчок), Большой мотор (L,
+  низкочастотный), Длина импульса (1-40 мс), кнопка Тест и поле для проверки ввода.
+- **Проводник:** переключатель "Кнопки геймпада в проводнике".
 
-All settings live in `kbdhaptic.ini` next to the exe and apply live.
+Все настройки лежат в `kbdhaptic.ini` рядом с программой и применяются сразу.
 
-## Build
+## Сборка
 
-Run **build.cmd** (uses the in-box .NET Framework C# compiler, no Visual Studio
-needed). Output goes to `release/kbdhaptic.exe`.
+Запусти **build.cmd** (использует встроенный в .NET Framework компилятор C#, Visual
+Studio не нужен). Результат в `release/kbdhaptic.exe`.
