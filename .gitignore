@@ -1,0 +1,4 @@
+# build/runtime artifacts
+*.log
+*.pdb
+kbdhaptic.ini
