@@ -34,6 +34,32 @@ echo Starting kbdhaptic ...
 start "" "%DST%\kbdhaptic.exe"
 
 echo.
+echo ------------------------------------------------------------
+echo  Optional: Windows screen auto-rotation
+echo ------------------------------------------------------------
+echo  kbdhaptic can rotate the screen from the orientation sensor.
+echo  On this handheld Windows' own auto-rotation never engages
+echo  (the built-in sensor exposes no accelerometer), so kbdhaptic
+echo  does the rotating itself. To make Windows show the
+echo  "Auto-rotate" toggle and treat the device as a tablet, three
+echo  values are written to the registry under HKLM. That needs
+echo  administrator rights (Windows will show a UAC prompt), and you
+echo  must reboot or sign out afterwards. The toggle then works as
+echo  the rotation on/off lock.
+echo.
+if not exist "%~dp0Enable-AutoRotate.reg" goto skipreg
+set "AR="
+set /p "AR=Enable Windows auto-rotate support now? [y/N]: "
+if /i not "%AR%"=="Y" goto skipreg
+set "REGFILE=%~dp0Enable-AutoRotate.reg"
+powershell -NoProfile -Command "Start-Process reg.exe -ArgumentList @('import','%REGFILE%') -Verb RunAs -Wait"
+echo Applied. Reboot or sign out to finish enabling auto-rotate.
+goto afterreg
+:skipreg
+echo Skipped. You can run Enable-AutoRotate.reg later to enable it.
+:afterreg
+
+echo.
 echo Done. kbdhaptic is running in the tray and will start at logon.
 echo (Your kbdhaptic.ini settings were kept.)
 echo Open its settings from the tray icon (double-click).

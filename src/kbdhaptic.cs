@@ -154,8 +154,20 @@ internal static class KbdHaptic
     private static IFrameworkInputPane _fip;
     private static readonly object _motorLock = new object();
     private static System.Threading.Timer _offTimer;
-    private static readonly BlockingCollection<uint> _work = new BlockingCollection<uint>();
+    // Work items are enqueue timestamps (ms on a monotonic clock), not vkCodes: a pulse
+    // only cares WHEN the tap happened, so stale items can be dropped under load.
+    private static readonly BlockingCollection<long> _work = new BlockingCollection<long>();
     private static readonly HashSet<uint> _down = new HashSet<uint>();
+    private static readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    // Cached keyboard-visible state so the shell COM Location() call is not made on every
+    // keydown (it can stall under load and back the queue up, firing late burst pulses).
+    // Init well in the past (not long.MinValue, which overflows the age subtraction and
+    // would wedge the cache at "not visible") so the first query runs immediately.
+    private static long _visTick = -100000;
+    private static bool _visCached;
+    // A pulse older than this (ms) when it reaches the worker is skipped: too late to feel
+    // in sync, and firing it would be the out-of-time buzzing seen under high load.
+    private const long StalePulseMs = 60;
     private static string _iniPath, _logPath;
 
     [STAThread]
@@ -256,7 +268,7 @@ internal static class KbdHaptic
                     bool injected = (k.flags & LLKHF_INJECTED) != 0;
                     bool firstPress = _down.Add(k.vkCode);
                     if (_enabled && firstPress && (!_injectedOnly || injected))
-                        _work.Add(k.vkCode);
+                        _work.Add(_clock.ElapsedMilliseconds);
                 }
                 else if (m == WM_KEYUP || m == WM_SYSKEYUP)
                 {
@@ -274,21 +286,41 @@ internal static class KbdHaptic
         try { _fip = (IFrameworkInputPane)new FrameworkInputPane(); }
         catch (Exception ex) { Log("FrameworkInputPane create failed: " + ex.Message); return; }
 
-        foreach (var vk in _work.GetConsumingEnumerable())
+        foreach (var t0 in _work.GetConsumingEnumerable())
         {
             try
             {
-                bool visible = true;
-                if (_requireKeyboardVisible)
-                {
-                    RECT r; _fip.Location(out r);
-                    visible = !(r.left == 0 && r.top == 0 && r.right == 0 && r.bottom == 0);
-                }
-                if (_debug) Log("keydown vk=" + vk + " kbdVisible=" + visible);
+                // Coalesce any backlog that piled up while we were busy: keep only the
+                // newest tap, drop the rest. Under normal typing the queue is empty so
+                // this is one pulse per key; under load it collapses a burst to one.
+                long newest = t0; long t; int drained = 0;
+                while (_work.TryTake(out t)) { newest = t; drained++; }
+
+                long age = _clock.ElapsedMilliseconds - newest;
+                if (age > StalePulseMs) { if (_debug) Log("skip stale pulse age=" + age + "ms drained=" + drained); continue; }
+
+                bool visible = KeyboardVisibleCached();
+                if (_debug) Log("pulse age=" + age + "ms drained=" + drained + " kbdVisible=" + visible);
                 if (visible) Pulse();
             }
             catch (Exception ex) { Log("work error: " + ex.Message); }
         }
+    }
+
+    // Keyboard-visible via the shell COM interface, but queried at most ~10x/sec. The
+    // COM call can block under load; calling it per keydown backs the queue up, so the
+    // result is cached for a short window.
+    private static bool KeyboardVisibleCached()
+    {
+        if (!_requireKeyboardVisible) return true;
+        long now = _clock.ElapsedMilliseconds;
+        if (now - _visTick > 100)
+        {
+            try { RECT r; _fip.Location(out r); _visCached = !(r.left == 0 && r.top == 0 && r.right == 0 && r.bottom == 0); }
+            catch { /* keep last cached value */ }
+            _visTick = now;
+        }
+        return _visCached;
     }
 
     // Public for the Test button.
@@ -370,6 +402,10 @@ internal static class KbdHaptic
             try
             {
                 if (!_autoRotate) { Thread.Sleep(600); continue; }
+                // Locked unless the Windows auto-rotate feature is provisioned (the
+                // Enable-AutoRotate.reg flags). Without it there is no quick-settings tile
+                // / lock, so we do not rotate on our own.
+                if (!IsAutoRotateProvisioned()) { Thread.Sleep(800); lastApplied = -1; continue; }
                 if (!IsRotationUnlocked()) { Thread.Sleep(600); lastApplied = -1; continue; }
 
                 if (sensor == null)
@@ -394,6 +430,25 @@ internal static class KbdHaptic
             catch (Exception ex) { Log("rotate error: " + ex.Message); sensor = null; }
             Thread.Sleep(400);
         }
+    }
+
+    // The Windows auto-rotate feature is provisioned when SlateEnable+SensorPresent are
+    // set (Enable-AutoRotate.reg). If they are zero/absent, the auto-rotate option is
+    // locked: no quick-settings tile exists and we must not rotate the screen ourselves.
+    private static bool IsAutoRotateProvisioned()
+    {
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation"))
+            {
+                if (k == null) return false;
+                object slate = k.GetValue("SlateEnable");
+                object sensor = k.GetValue("SensorPresent");
+                return slate != null && Convert.ToInt32(slate) != 0
+                    && sensor != null && Convert.ToInt32(sensor) != 0;
+            }
+        }
+        catch { return false; }
     }
 
     // The quick-setting lock lives in AutoRotation\Enable (1 = auto-rotate on). Missing
@@ -528,6 +583,7 @@ internal static class KbdHaptic
     internal static bool Enabled { get { return _enabled; } set { _enabled = value; } }
     internal static bool GamepadButtonsInExplorer { get { return _gamepadButtonsInExplorer; } set { _gamepadButtonsInExplorer = value; } }
     internal static bool AutoRotate { get { return _autoRotate; } set { _autoRotate = value; } }
+    internal static bool AutoRotateProvisioned { get { return IsAutoRotateProvisioned(); } }
 
     // ================= tray UI =================
     private sealed class TrayContext : ApplicationContext
@@ -535,7 +591,6 @@ internal static class KbdHaptic
         private readonly NotifyIcon _icon;
         private SettingsForm _form;
         private readonly ToolStripMenuItem _enabledItem;
-        private readonly ToolStripMenuItem _rotateItem;
 
         public TrayContext()
         {
@@ -545,16 +600,9 @@ internal static class KbdHaptic
             });
             _enabledItem.Checked = Enabled;
 
-            _rotateItem = new ToolStripMenuItem("Автоповорот", null, (s, e) =>
-            {
-                AutoRotate = !AutoRotate; _rotateItem.Checked = AutoRotate; SaveConfig();
-            });
-            _rotateItem.Checked = AutoRotate;
-
             var menu = new ContextMenuStrip();
             menu.Items.Add(new ToolStripMenuItem("Настройки", null, (s, e) => ShowSettings()));
             menu.Items.Add(_enabledItem);
-            menu.Items.Add(_rotateItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Выход", null, (s, e) => ExitApp()));
 
@@ -646,8 +694,23 @@ internal static class KbdHaptic
             gbExpl.Controls.Add(gp); gbExpl.Controls.Add(hint);
             Controls.Add(gbExpl);
 
+            // --- Экран ---
+            bool rotProv = AutoRotateProvisioned;
+            var gbScreen = new GroupBox { Text = "Экран", Left = S(10), Top = S(346), Width = W, Height = S(96) };
+            var ar = new CheckBox { Text = "Автоповорот экрана", Left = S(14), Top = S(26), AutoSize = true, Checked = AutoRotate && rotProv, Enabled = rotProv };
+            ar.CheckedChanged += (s, e) => { AutoRotate = ar.Checked; SaveConfig(); };
+            var arHint = new Label
+            {
+                Text = rotProv ? "Поворот экрана по датчику ориентации"
+                               : "Отключено: запустите Enable-AutoRotate.reg, затем перезагрузка",
+                Left = S(14), Top = S(50), Width = W - S(28), Height = S(40), AutoSize = false,
+                ForeColor = SystemColors.GrayText, Font = new Font(Font.FontFamily, 8f * _s)
+            };
+            gbScreen.Controls.Add(ar); gbScreen.Controls.Add(arHint);
+            Controls.Add(gbScreen);
+
             // --- Проверка ---
-            var gbTest = new GroupBox { Text = "Проверка", Left = S(10), Top = S(346), Width = W, Height = S(108) };
+            var gbTest = new GroupBox { Text = "Проверка", Left = S(10), Top = S(454), Width = W, Height = S(108) };
             var test = new Button { Text = "Тест импульса", Left = S(14), Top = S(30), Width = W - S(28), Height = S(32) };
             test.Click += (s, e) => Pulse();
             _testBox = new TextBox { Left = S(14), Top = S(70), Width = W - S(28), Height = S(26) };
@@ -657,11 +720,11 @@ internal static class KbdHaptic
             Controls.Add(gbTest);
 
             // --- Закрыть ---
-            var close = new Button { Text = "Закрыть", Left = S(10) + W - S(120), Top = S(464), Width = S(120), Height = S(34) };
+            var close = new Button { Text = "Закрыть", Left = S(10) + W - S(120), Top = S(572), Width = S(120), Height = S(34) };
             close.Click += (s, e) => Hide();
             Controls.Add(close);
 
-            ClientSize = new Size(S(400), S(510));
+            ClientSize = new Size(S(400), S(618));
         }
 
         private void AddSlider(Control parent, string label, int min, int max, int val, int top, Action<int> onChange)
