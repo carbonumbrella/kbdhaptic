@@ -26,6 +26,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 internal static class KbdHaptic
 {
@@ -39,6 +40,17 @@ internal static class KbdHaptic
     private static bool _enabled = true;
     private static bool _gamepadButtonsInExplorer = true; // A/B/X/Y actions while an Explorer window is active
     private static bool _debug = false;
+
+    // Auto-rotate: this Claw's sensor exposes only a Simple Device Orientation sensor
+    // (no accelerometer/fusion sensor), so Windows' own screen auto-rotation never
+    // engages. We read that sensor directly and rotate the display ourselves. The
+    // Windows "Auto-rotate" quick-setting still acts as the lock (AutoRotation\Enable).
+    private static bool _autoRotate = true;
+    // Map SimpleOrientation (NotRotated=0, 90ccw=1, 180=2, 270ccw=3) -> display
+    // orientation DMDO (0,1,2,3). Default {0,3,2,1} is calibrated for the Claw 8 panel
+    // (its two portrait orientations are swapped vs the naive mapping); adjustable from
+    // the ini for other panels.
+    private static int[] _rotateMap = { 0, 3, 2, 1 };
 
     // ---- win32 ----
     private const int WH_KEYBOARD_LL = 13;
@@ -78,6 +90,30 @@ internal static class KbdHaptic
     private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    // ---- display rotation ----
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DEVMODE
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion; public ushort dmDriverVersion; public ushort dmSize; public ushort dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX; public int dmPositionY; public uint dmDisplayOrientation; public uint dmDisplayFixedOutput;
+        public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels; public uint dmBitsPerPel; public uint dmPelsWidth; public uint dmPelsHeight;
+        public uint dmDisplayFlags; public uint dmDisplayFrequency;
+        public uint dmICMMethod; public uint dmICMIntent; public uint dmMediaType; public uint dmDitherType;
+        public uint dmReserved1; public uint dmReserved2; public uint dmPanningWidth; public uint dmPanningHeight;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ChangeDisplaySettingsEx(string dev, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr lp);
+    private const int ENUM_CURRENT_SETTINGS = -1;
+    private const uint DM_PELSWIDTH = 0x80000, DM_PELSHEIGHT = 0x100000, DM_DISPLAYORIENTATION = 0x80;
+    private const uint CDS_UPDATEREGISTRY = 0x01;
+    private const uint DMDO_DEFAULT = 0, DMDO_90 = 1, DMDO_180 = 2, DMDO_270 = 3;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct XINPUT_VIBRATION { public ushort wLeftMotorSpeed; public ushort wRightMotorSpeed; }
@@ -180,6 +216,9 @@ internal static class KbdHaptic
 
         var poll = new Thread(PollLoop) { IsBackground = true };
         poll.Start();
+
+        var rot = new Thread(RotateLoop) { IsBackground = true };
+        rot.Start();
 
         AppDomain.CurrentDomain.ProcessExit += (s, e) => SetMotors(0, 0);
         AppDomain.CurrentDomain.UnhandledException += (s, e) => SetMotors(0, 0);
@@ -316,6 +355,85 @@ internal static class KbdHaptic
         return sb.ToString() == "CabinetWClass";
     }
 
+    // Read the Simple Device Orientation sensor (WinRT, via reflection so the in-box
+    // csc build needs no winmd reference) and rotate the display to match. Faceup /
+    // Facedown are ignored (keep the last orientation). A new orientation must persist
+    // for two polls before it is applied, to avoid flicker mid-rotation. The Windows
+    // quick-setting "Auto-rotate" is honored as the lock via AutoRotation\Enable.
+    private static void RotateLoop()
+    {
+        object sensor = null;
+        MethodInfo getCur = null;
+        int candidate = -1, stable = 0, lastApplied = -1;
+        while (true)
+        {
+            try
+            {
+                if (!_autoRotate) { Thread.Sleep(600); continue; }
+                if (!IsRotationUnlocked()) { Thread.Sleep(600); lastApplied = -1; continue; }
+
+                if (sensor == null)
+                {
+                    Type t = Type.GetType("Windows.Devices.Sensors.SimpleOrientationSensor, Windows, ContentType=WindowsRuntime");
+                    if (t != null) { sensor = t.GetMethod("GetDefault").Invoke(null, null); if (sensor != null) getCur = sensor.GetType().GetMethod("GetCurrentOrientation"); }
+                    if (sensor == null) { Thread.Sleep(1000); continue; }
+                }
+
+                int ori = Convert.ToInt32(getCur.Invoke(sensor, null)); // 0..5
+                if (ori >= 4) { Thread.Sleep(400); continue; } // Faceup / Facedown -> ignore
+
+                int target = _rotateMap[ori & 3] & 3;
+                if (target == candidate) { if (stable < 2) stable++; }
+                else { candidate = target; stable = 1; }
+
+                if (stable >= 2 && target != lastApplied)
+                {
+                    if (SetDisplayOrientation((uint)target)) { lastApplied = target; Log("rotated ori=" + ori + " -> dmdo=" + target); }
+                }
+            }
+            catch (Exception ex) { Log("rotate error: " + ex.Message); sensor = null; }
+            Thread.Sleep(400);
+        }
+    }
+
+    // The quick-setting lock lives in AutoRotation\Enable (1 = auto-rotate on). Missing
+    // value is treated as enabled.
+    private static bool IsRotationUnlocked()
+    {
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\AutoRotation"))
+            {
+                if (k == null) return true;
+                object v = k.GetValue("Enable");
+                if (v == null) return true;
+                return Convert.ToInt32(v) != 0;
+            }
+        }
+        catch { return true; }
+    }
+
+    private static bool SetDisplayOrientation(uint dmdo)
+    {
+        string dev = null;
+        try { dev = Screen.PrimaryScreen.DeviceName; } catch { }
+        var dm = new DEVMODE();
+        dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+        if (EnumDisplaySettings(dev, ENUM_CURRENT_SETTINGS, ref dm) == 0 || dm.dmPelsWidth == 0) return false;
+        if (dm.dmDisplayOrientation == dmdo) return true; // already there
+
+        // Landscape baseline (long edge = width) from the current mode.
+        uint lw = dm.dmPelsWidth, lh = dm.dmPelsHeight;
+        if (dm.dmDisplayOrientation == DMDO_90 || dm.dmDisplayOrientation == DMDO_270) { uint t = lw; lw = lh; lh = t; }
+
+        bool portrait = (dmdo == DMDO_90 || dmdo == DMDO_270);
+        dm.dmPelsWidth = portrait ? lh : lw;
+        dm.dmPelsHeight = portrait ? lw : lh;
+        dm.dmDisplayOrientation = dmdo;
+        dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYORIENTATION;
+        return ChangeDisplaySettingsEx(dev, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY, IntPtr.Zero) == 0;
+    }
+
     private static void Tap(byte vk)
     {
         keybd_event(vk, 0, 0, UIntPtr.Zero);
@@ -353,12 +471,28 @@ internal static class KbdHaptic
                 case "enabled": _enabled = IsTrue(v); break;
                 case "gamepadbuttonsinexplorer": _gamepadButtonsInExplorer = IsTrue(v); break;
                 case "gamepadenterinexplorer": _gamepadButtonsInExplorer = IsTrue(v); break; // legacy key
+                case "autorotate": _autoRotate = IsTrue(v); break;
+                case "rotatemap": ParseRotateMap(v); break;
                 case "debug": _debug = IsTrue(v); break;
             }
         }
     }
 
     private static bool IsTrue(string v) { return v.Equals("true", StringComparison.OrdinalIgnoreCase) || v == "1"; }
+
+    private static void ParseRotateMap(string v)
+    {
+        var parts = v.Split(',');
+        if (parts.Length != 4) return;
+        var m = new int[4];
+        for (int i = 0; i < 4; i++)
+        {
+            int n;
+            if (!int.TryParse(parts[i].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out n)) return;
+            m[i] = n & 3;
+        }
+        _rotateMap = m;
+    }
 
     internal static void SaveConfig()
     {
@@ -374,6 +508,8 @@ internal static class KbdHaptic
                 "requireKeyboardVisible=" + (_requireKeyboardVisible ? "true" : "false") + " ; only while keyboard shown\r\n" +
                 "enabled=" + (_enabled ? "true" : "false") + "              ; master on/off\r\n" +
                 "gamepadButtonsInExplorer=" + (_gamepadButtonsInExplorer ? "true" : "false") + " ; A/B/X/Y actions in Explorer\r\n" +
+                "autoRotate=" + (_autoRotate ? "true" : "false") + "            ; rotate screen from the orientation sensor\r\n" +
+                "rotateMap=" + string.Join(",", Array.ConvertAll(_rotateMap, x => x.ToString())) + "          ; sensor->display orientation map (calibration)\r\n" +
                 "debug=" + (_debug ? "true" : "false") + "                  ; write kbdhaptic.log\r\n");
         }
         catch { }
@@ -391,6 +527,7 @@ internal static class KbdHaptic
     internal static int PulseMs { get { return _pulseMs; } set { _pulseMs = value; } }
     internal static bool Enabled { get { return _enabled; } set { _enabled = value; } }
     internal static bool GamepadButtonsInExplorer { get { return _gamepadButtonsInExplorer; } set { _gamepadButtonsInExplorer = value; } }
+    internal static bool AutoRotate { get { return _autoRotate; } set { _autoRotate = value; } }
 
     // ================= tray UI =================
     private sealed class TrayContext : ApplicationContext
@@ -398,6 +535,7 @@ internal static class KbdHaptic
         private readonly NotifyIcon _icon;
         private SettingsForm _form;
         private readonly ToolStripMenuItem _enabledItem;
+        private readonly ToolStripMenuItem _rotateItem;
 
         public TrayContext()
         {
@@ -407,9 +545,16 @@ internal static class KbdHaptic
             });
             _enabledItem.Checked = Enabled;
 
+            _rotateItem = new ToolStripMenuItem("Автоповорот", null, (s, e) =>
+            {
+                AutoRotate = !AutoRotate; _rotateItem.Checked = AutoRotate; SaveConfig();
+            });
+            _rotateItem.Checked = AutoRotate;
+
             var menu = new ContextMenuStrip();
             menu.Items.Add(new ToolStripMenuItem("Настройки", null, (s, e) => ShowSettings()));
             menu.Items.Add(_enabledItem);
+            menu.Items.Add(_rotateItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Выход", null, (s, e) => ExitApp()));
 
