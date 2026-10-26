@@ -91,6 +91,16 @@ internal static class KbdHaptic
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
+    // message loop for the dedicated hook thread
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int pt_x; public int pt_y; }
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
     // ---- display rotation ----
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct DEVMODE
@@ -153,7 +163,11 @@ internal static class KbdHaptic
     private static IntPtr _hook = IntPtr.Zero;
     private static IFrameworkInputPane _fip;
     private static readonly object _motorLock = new object();
-    private static System.Threading.Timer _offTimer;
+    // Motor-off runs on MotorLoop (its own above-normal thread), not a thread-pool timer:
+    // under heavy load the pool was starved so "motor off" was delayed by seconds, leaving
+    // the motor buzzing continuously. _motorDeadline is a monotonic-clock ms deadline.
+    private static volatile int _motorDeadline;            // 0 = motor off
+    private static readonly AutoResetEvent _pulseSignal = new AutoResetEvent(false);
     // Work items are enqueue timestamps (ms on a monotonic clock), not vkCodes: a pulse
     // only cares WHEN the tap happened, so stale items can be dropped under load.
     private static readonly BlockingCollection<long> _work = new BlockingCollection<long>();
@@ -219,11 +233,16 @@ internal static class KbdHaptic
         GC.KeepAlive(mtx);
 
         LoadOrCreateConfig();
-        _offTimer = new System.Threading.Timer(_ => SetMotors(0, 0), null, Timeout.Infinite, Timeout.Infinite);
         SetMotors(0, 0);
+
+        // Motor off runs here, on its own above-normal thread (see _motorDeadline).
+        var motor = new Thread(MotorLoop) { IsBackground = true };
+        try { motor.Priority = ThreadPriority.AboveNormal; } catch { }
+        motor.Start();
 
         var worker = new Thread(WorkLoop) { IsBackground = true };
         worker.SetApartmentState(ApartmentState.STA);
+        try { worker.Priority = ThreadPriority.AboveNormal; } catch { }
         worker.Start();
 
         var poll = new Thread(PollLoop) { IsBackground = true };
@@ -235,9 +254,11 @@ internal static class KbdHaptic
         AppDomain.CurrentDomain.ProcessExit += (s, e) => SetMotors(0, 0);
         AppDomain.CurrentDomain.UnhandledException += (s, e) => SetMotors(0, 0);
 
-        _proc = HookCallback;
-        _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
-        if (_hook == IntPtr.Zero) { Log("SetWindowsHookEx failed err=" + Marshal.GetLastWin32Error()); return 1; }
+        // Keyboard hook on its own above-normal thread with its own message loop, so the
+        // WinForms UI pump cannot starve it under load (which dropped/delayed taps).
+        var hookThread = new Thread(HookThread) { IsBackground = true };
+        try { hookThread.Priority = ThreadPriority.AboveNormal; } catch { }
+        hookThread.Start();
         Log("started");
 
         Application.EnableVisualStyles();
@@ -247,6 +268,39 @@ internal static class KbdHaptic
         if (_hook != IntPtr.Zero) UnhookWindowsHookEx(_hook);
         SetMotors(0, 0);
         return 0;
+    }
+
+    // Keyboard hook owner: installs WH_KEYBOARD_LL and pumps its own message queue. The
+    // hook callback runs on this thread, isolated from the UI pump.
+    private static void HookThread()
+    {
+        _proc = HookCallback;
+        _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
+        if (_hook == IntPtr.Zero) { Log("SetWindowsHookEx failed err=" + Marshal.GetLastWin32Error()); return; }
+        MSG msg;
+        while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+        {
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+    }
+
+    // Motor-off timer on a dedicated above-normal thread, driven by the monotonic clock
+    // so it cannot be starved by the thread pool. Guarantees the motor stops within a few
+    // ms of its deadline even under heavy CPU load.
+    private static void MotorLoop()
+    {
+        while (true)
+        {
+            _pulseSignal.WaitOne(100);
+            int dl;
+            while ((dl = _motorDeadline) != 0)
+            {
+                int now = (int)_clock.ElapsedMilliseconds;
+                if (now >= dl) { SetMotors(0, 0); _motorDeadline = 0; if (_debug) Log("motor off"); break; }
+                Thread.Sleep(Math.Min(dl - now, 8));
+            }
+        }
     }
 
     private static void Realize(Control c)
@@ -329,7 +383,10 @@ internal static class KbdHaptic
         ushort right = (ushort)(Clamp(_clickIntensity, 0, 100) * 65535 / 100);
         ushort left = (ushort)(Clamp(_bassIntensity, 0, 100) * 65535 / 100);
         SetMotors(left, right);
-        _offTimer.Change(_pulseMs, Timeout.Infinite);
+        // Hand the motor-off deadline to MotorLoop (hard-capped at 60ms so a lost wakeup
+        // can never leave the motor on for seconds).
+        _motorDeadline = (int)_clock.ElapsedMilliseconds + Clamp(_pulseMs, 1, 60);
+        _pulseSignal.Set();
     }
 
     private static void SetMotors(ushort left, ushort right)
