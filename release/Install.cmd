@@ -1,7 +1,7 @@
 @echo off
 rem kbdhaptic installer: removes any previous version, then installs to
 rem %LOCALAPPDATA%\kbdhaptic, registers a logon autostart task (no admin needed),
-rem and launches it. Existing kbdhaptic.ini settings are preserved.
+rem creates a desktop shortcut, and launches it. Existing kbdhaptic.ini is preserved.
 setlocal
 set "DST=%LOCALAPPDATA%\kbdhaptic"
 
@@ -28,6 +28,14 @@ if errorlevel 1 (
   echo WARNING: could not create the scheduled task. Autostart not set.
 ) else (
   echo Autostart task "kbdhaptic" created.
+)
+
+echo Creating desktop shortcut ...
+powershell -NoProfile -Command "$ws=New-Object -ComObject WScript.Shell; $p=[Environment]::GetFolderPath('Desktop'); $lnk=$ws.CreateShortcut($p+'\kbdhaptic.lnk'); $lnk.TargetPath='%DST%\kbdhaptic.exe'; $lnk.WorkingDirectory='%DST%'; $lnk.IconLocation='%DST%\kbdhaptic.exe,0'; $lnk.Description='kbdhaptic'; $lnk.Save()"
+if errorlevel 1 (
+  echo WARNING: could not create the desktop shortcut.
+) else (
+  echo Desktop shortcut created.
 )
 
 echo Starting kbdhaptic ...

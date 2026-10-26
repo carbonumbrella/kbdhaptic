@@ -10,6 +10,9 @@ echo Stopping kbdhaptic ...
 taskkill /IM kbdhaptic.exe /F >nul 2>&1
 timeout /t 1 /nobreak >nul
 
+echo Removing desktop shortcut ...
+powershell -NoProfile -Command "$p=[Environment]::GetFolderPath('Desktop'); Remove-Item (Join-Path $p 'kbdhaptic.lnk') -ErrorAction SilentlyContinue"
+
 echo Deleting files ...
 rd /s /q "%DST%" 2>nul
 
