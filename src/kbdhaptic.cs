@@ -704,17 +704,17 @@ internal static class KbdHaptic
             var key = Color.FromArgb(0x2D, 0x8C, 0xF0);
             using (var b = new SolidBrush(key))
             using (var wb = new SolidBrush(Color.White))
-            using (var pen = new Pen(key, 2.2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
+            using (var pen = new Pen(key, 3.2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
             {
-                g.DrawLine(pen, 13f, 26f, 13f, 38f);       // left outer tall
-                g.DrawLine(pen, 16.5f, 28.5f, 16.5f, 35.5f); // left inner short
-                g.DrawLine(pen, 47.5f, 28.5f, 47.5f, 35.5f); // right inner short
-                g.DrawLine(pen, 51f, 26f, 51f, 38f);       // right outer tall
-                using (var body = RoundRect(21f, 25f, 22f, 14f, 3f)) g.FillPath(b, body);
-                foreach (float ky in new[] { 27.3f, 30.8f })
-                    foreach (float kx in new[] { 25.5f, 28.9f, 32.3f, 35.7f })
-                        using (var k = RoundRect(kx, ky, 2.8f, 2.8f, 0.7f)) g.FillPath(wb, k);
-                using (var sb = RoundRect(25.5f, 34.6f, 13f, 1.9f, 0.7f)) g.FillPath(wb, sb);
+                g.DrawLine(pen, 7f, 20f, 7f, 44f);         // left outer tall
+                g.DrawLine(pen, 12.5f, 25f, 12.5f, 39f);   // left inner short
+                g.DrawLine(pen, 51.5f, 25f, 51.5f, 39f);   // right inner short
+                g.DrawLine(pen, 57f, 20f, 57f, 44f);       // right outer tall
+                using (var body = RoundRect(18f, 19f, 28f, 26f, 4f)) g.FillPath(b, body);
+                foreach (float ky in new[] { 23f, 29.5f })
+                    foreach (float kx in new[] { 22.5f, 27.5f, 32.5f, 37.5f })
+                        using (var k = RoundRect(kx, ky, 4f, 4.5f, 1f)) g.FillPath(wb, k);
+                using (var sb = RoundRect(24f, 37.5f, 16f, 3f, 1f)) g.FillPath(wb, sb);
             }
         }
         return Icon.FromHandle(bmp.GetHicon()); // handle kept for process lifetime
