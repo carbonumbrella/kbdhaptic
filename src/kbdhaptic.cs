@@ -700,7 +700,11 @@ internal static class KbdHaptic
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
-            g.ScaleTransform(32f / 64f, 32f / 64f);
+            // Zoom the glyph about the centre so it fills the small tray cell better.
+            const float z = 1.25f;
+            g.TranslateTransform(16f, 16f);
+            g.ScaleTransform(32f / 64f * z, 32f / 64f * z);
+            g.TranslateTransform(-32f, -32f);
             var key = Color.FromArgb(0x2D, 0x8C, 0xF0);
             using (var b = new SolidBrush(key))
             using (var wb = new SolidBrush(Color.White))
