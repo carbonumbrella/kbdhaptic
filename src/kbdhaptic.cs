@@ -691,7 +691,8 @@ internal static class KbdHaptic
 
     }
 
-    // A small drawn icon: a rounded key with vibration arcs on both sides.
+    // A keyboard with vibration motion lines on both sides (matches src/kbdhaptic.ico).
+    // Drawn on a 64-unit grid then scaled to 32px.
     private static Icon MakeIcon()
     {
         var bmp = new Bitmap(32, 32);
@@ -699,18 +700,36 @@ internal static class KbdHaptic
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
+            g.ScaleTransform(32f / 64f, 32f / 64f);
             var key = Color.FromArgb(0x2D, 0x8C, 0xF0);
             using (var b = new SolidBrush(key))
-            using (var pen = new Pen(key, 2f))
+            using (var wb = new SolidBrush(Color.White))
+            using (var pen = new Pen(key, 2.2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
             {
-                g.FillRectangle(b, new Rectangle(10, 9, 12, 14));
-                using (var wb = new SolidBrush(Color.White))
-                    g.FillRectangle(wb, new Rectangle(13, 12, 6, 5));
-                g.DrawArc(pen, new Rectangle(2, 8, 8, 16), 60, -120);
-                g.DrawArc(pen, new Rectangle(22, 8, 8, 16), -60, 120);
+                g.DrawLine(pen, 13f, 26f, 13f, 38f);       // left outer tall
+                g.DrawLine(pen, 16.5f, 28.5f, 16.5f, 35.5f); // left inner short
+                g.DrawLine(pen, 47.5f, 28.5f, 47.5f, 35.5f); // right inner short
+                g.DrawLine(pen, 51f, 26f, 51f, 38f);       // right outer tall
+                using (var body = RoundRect(21f, 25f, 22f, 14f, 3f)) g.FillPath(b, body);
+                foreach (float ky in new[] { 27.3f, 30.8f })
+                    foreach (float kx in new[] { 25.5f, 28.9f, 32.3f, 35.7f })
+                        using (var k = RoundRect(kx, ky, 2.8f, 2.8f, 0.7f)) g.FillPath(wb, k);
+                using (var sb = RoundRect(25.5f, 34.6f, 13f, 1.9f, 0.7f)) g.FillPath(wb, sb);
             }
         }
         return Icon.FromHandle(bmp.GetHicon()); // handle kept for process lifetime
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundRect(float x, float y, float w, float h, float r)
+    {
+        var p = new System.Drawing.Drawing2D.GraphicsPath();
+        float d = r * 2;
+        p.AddArc(x, y, d, d, 180, 90);
+        p.AddArc(x + w - d, y, d, d, 270, 90);
+        p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+        p.AddArc(x, y + h - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 
     private sealed class SettingsForm : Form
