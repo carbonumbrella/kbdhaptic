@@ -9,6 +9,7 @@ if not exist "%CSC%" (
 )
 if not exist "release" mkdir "release"
 "%CSC%" /nologo /target:winexe /platform:x64 /win32manifest:"src\kbdhaptic.manifest" ^
+  /win32icon:"src\kbdhaptic.ico" ^
   /r:"%FW%\System.Windows.Forms.dll" /r:"%FW%\System.Drawing.dll" ^
   /out:"release\kbdhaptic.exe" "src\kbdhaptic.cs"
 echo build exit %ERRORLEVEL%
