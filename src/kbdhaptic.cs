@@ -135,6 +135,8 @@ internal static class KbdHaptic
     private static extern uint XInputSetState(uint dwUserIndex, ref XINPUT_VIBRATION pVibration);
     [DllImport("xinput1_4.dll")]
     private static extern uint XInputGetState(uint dwUserIndex, out XINPUT_STATE pState);
+    [DllImport("winmm.dll")]
+    private static extern uint timeBeginPeriod(uint uPeriod); // 1ms timer so short pulses are consistent
 
     private const ushort XINPUT_GAMEPAD_A = 0x1000;
     private const ushort XINPUT_GAMEPAD_B = 0x2000;
@@ -233,6 +235,7 @@ internal static class KbdHaptic
         GC.KeepAlive(mtx);
 
         LoadOrCreateConfig();
+        try { timeBeginPeriod(1); } catch { } // precise short-pulse timing
         SetMotors(0, 0);
 
         // Motor off runs here, on its own above-normal thread (see _motorDeadline).
@@ -344,17 +347,14 @@ internal static class KbdHaptic
         {
             try
             {
-                // Coalesce any backlog that piled up while we were busy: keep only the
-                // newest tap, drop the rest. Under normal typing the queue is empty so
-                // this is one pulse per key; under load it collapses a burst to one.
-                long newest = t0; long t; int drained = 0;
-                while (_work.TryTake(out t)) { newest = t; drained++; }
-
-                long age = _clock.ElapsedMilliseconds - newest;
-                if (age > StalePulseMs) { if (_debug) Log("skip stale pulse age=" + age + "ms drained=" + drained); continue; }
+                // One pulse per keystroke. Only drop a tap that is already too old to feel
+                // in sync (a backlog built up under heavy load); do NOT coalesce distinct
+                // taps, or fast typing loses every other pulse.
+                long age = _clock.ElapsedMilliseconds - t0;
+                if (age > StalePulseMs) { if (_debug) Log("skip stale pulse age=" + age); continue; }
 
                 bool visible = KeyboardVisibleCached();
-                if (_debug) Log("pulse age=" + age + "ms drained=" + drained + " kbdVisible=" + visible);
+                if (_debug) Log("pulse age=" + age + " kbdVisible=" + visible);
                 if (visible) Pulse();
             }
             catch (Exception ex) { Log("work error: " + ex.Message); }
@@ -383,9 +383,10 @@ internal static class KbdHaptic
         ushort right = (ushort)(Clamp(_clickIntensity, 0, 100) * 65535 / 100);
         ushort left = (ushort)(Clamp(_bassIntensity, 0, 100) * 65535 / 100);
         SetMotors(left, right);
-        // Hand the motor-off deadline to MotorLoop (hard-capped at 60ms so a lost wakeup
-        // can never leave the motor on for seconds).
-        _motorDeadline = (int)_clock.ElapsedMilliseconds + Clamp(_pulseMs, 1, 60);
+        // Hand the motor-off deadline to MotorLoop. Floor at 12ms: a 1-2ms pulse is both
+        // below the ERM motor's feel threshold and shorter than scheduler jitter, so it
+        // fired inconsistently (every other tap felt nothing). Hard-capped at 60ms.
+        _motorDeadline = (int)_clock.ElapsedMilliseconds + Clamp(_pulseMs, 12, 60);
         _pulseSignal.Set();
     }
 
@@ -763,7 +764,7 @@ internal static class KbdHaptic
             var gbVibro = new GroupBox { Text = "Вибрация", Left = S(10), Top = S(8), Width = W, Height = S(234) };
             AddSlider(gbVibro, "Малый мотор (R)", 0, 100, ClickIntensity, 28, v => { ClickIntensity = v; SaveConfig(); });
             AddSlider(gbVibro, "Большой мотор (L)", 0, 100, BassIntensity, 94, v => { BassIntensity = v; SaveConfig(); });
-            AddSlider(gbVibro, "Длина импульса, мс", 1, 40, PulseMs, 160, v => { PulseMs = v; SaveConfig(); });
+            AddSlider(gbVibro, "Длина импульса, мс", 12, 40, PulseMs, 160, v => { PulseMs = v; SaveConfig(); });
             Controls.Add(gbVibro);
 
             // --- Проводник ---
