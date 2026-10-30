@@ -16,7 +16,7 @@
   настройках Windows работает как замок.
 - Работает в фоне из трея, без прав администратора, в простое около 0% CPU.
 
-<img src="docs/settings.png" alt="Окно настроек kbdhaptic" width="360">
+<img src="docs/settings.png" alt="Окно настроек kbdhaptic" width="640">
 
 
 ## Как работает

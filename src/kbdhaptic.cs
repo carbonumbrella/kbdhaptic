@@ -28,6 +28,11 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+[assembly: AssemblyTitle("kbdhaptic")]
+[assembly: AssemblyProduct("kbdhaptic")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
 internal static class KbdHaptic
 {
     // ---- config (live) ----
