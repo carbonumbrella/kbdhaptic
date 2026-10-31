@@ -30,8 +30,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("kbdhaptic")]
 [assembly: AssemblyProduct("kbdhaptic")]
-[assembly: AssemblyVersion("0.9.1.0")]
-[assembly: AssemblyFileVersion("0.9.1.0")]
+[assembly: AssemblyVersion("0.9.2.0")]
+[assembly: AssemblyFileVersion("0.9.2.0")]
 
 internal static class KbdHaptic
 {
@@ -85,6 +85,8 @@ internal static class KbdHaptic
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, string lParam);
     private const int EM_SETCUEBANNER = 0x1501;
+    private const string ShowEventName = "Local\\kbdhaptic_show";
+    [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int processId);
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
@@ -239,7 +241,17 @@ internal static class KbdHaptic
 
         bool createdNew;
         var mtx = new Mutex(false, "Local\\kbdhaptic_singleton", out createdNew);
-        if (!createdNew) return 0;
+        if (!createdNew)
+        {
+            // A second launch means "open the window" (ClawTweaks' tray list, the voice assistant, the shortcut)
+            try
+            {
+                AllowSetForegroundWindow(-1);
+                using (var ev = EventWaitHandle.OpenExisting(ShowEventName)) ev.Set();
+            }
+            catch { }
+            return 0;
+        }
         GC.KeepAlive(mtx);
 
         LoadOrCreateConfig();
@@ -656,6 +668,7 @@ internal static class KbdHaptic
     {
         private readonly NotifyIcon _icon;
         private SettingsForm _form;
+        private readonly Control _ui; // marshals the show signal to the UI thread
         private readonly ToolStripMenuItem _enabledItem;
 
         public TrayContext()
@@ -679,7 +692,23 @@ internal static class KbdHaptic
                 Visible = true,
                 ContextMenuStrip = menu
             };
-            _icon.DoubleClick += (s, e) => ShowSettings();
+            // One click, like SaySo and the LED app: ClawTweaks' "Open" invokes the icon once
+            _icon.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ShowSettings(); };
+
+            // A second launch signals this event (see Main)
+            _ui = new Control();
+            _ui.CreateControl();
+            var ignored = _ui.Handle;
+            var show = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+            var waiter = new Thread(() =>
+            {
+                while (show.WaitOne())
+                {
+                    try { _ui.BeginInvoke(new Action(ShowSettings)); } catch { return; }
+                }
+            });
+            waiter.IsBackground = true;
+            waiter.Start();
         }
 
         private void ShowSettings()
@@ -689,6 +718,7 @@ internal static class KbdHaptic
             _form.WindowState = FormWindowState.Normal;
             _form.BringToFront();
             _form.Activate();
+            SetForegroundWindow(_form.Handle); // also over the full-screen Xbox shell (the form is TopMost)
         }
 
         private void ExitApp()
