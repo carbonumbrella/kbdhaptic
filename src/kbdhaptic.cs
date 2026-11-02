@@ -30,8 +30,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("kbdhaptic")]
 [assembly: AssemblyProduct("kbdhaptic")]
-[assembly: AssemblyVersion("0.9.2.0")]
-[assembly: AssemblyFileVersion("0.9.2.0")]
+[assembly: AssemblyVersion("0.9.3.0")]
+[assembly: AssemblyFileVersion("0.9.3.0")]
 
 internal static class KbdHaptic
 {
@@ -86,6 +86,8 @@ internal static class KbdHaptic
     private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, string lParam);
     private const int EM_SETCUEBANNER = 0x1501;
     private const string ShowEventName = "Local\\kbdhaptic_show";
+    // Static on purpose: held by a local, the GC collected it during the run and the next launch became a second copy.
+    private static Mutex _singleton;
     [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int processId);
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -240,7 +242,7 @@ internal static class KbdHaptic
         _logPath = Path.Combine(dir, "kbdhaptic.log");
 
         bool createdNew;
-        var mtx = new Mutex(false, "Local\\kbdhaptic_singleton", out createdNew);
+        _singleton = new Mutex(false, "Local\\kbdhaptic_singleton", out createdNew);
         if (!createdNew)
         {
             // A second launch means "open the window" (ClawTweaks' tray list, the voice assistant, the shortcut)
@@ -252,7 +254,6 @@ internal static class KbdHaptic
             catch { }
             return 0;
         }
-        GC.KeepAlive(mtx);
 
         LoadOrCreateConfig();
         try { timeBeginPeriod(1); } catch { } // precise short-pulse timing
