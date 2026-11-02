@@ -1,5 +1,9 @@
 # kbdhaptic
 
+[![release](https://img.shields.io/github/v/release/carbonumbrella/kbdhaptic?include_prereleases&label=release)](https://github.com/carbonumbrella/kbdhaptic/releases)
+
+**[Скачать последнюю версию](https://github.com/carbonumbrella/kbdhaptic/releases)**
+
 Виброотклик экранной клавиатуры и управление проводником с геймпада для портативных
 ПК на Windows 11 (собрано и проверено на MSI Claw 8 AI+).
 
